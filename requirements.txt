@@ -1,0 +1,7 @@
+numpy
+scipy
+matplotlib
+trimesh
+cascadio
+cadquery
+pytest
