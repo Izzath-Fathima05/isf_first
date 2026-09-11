@@ -9,7 +9,8 @@ inversion.
 """
 
 import numpy as np
-from .point_projection import pappus_element_volume, robust_bisection_thickness as bisection_thickness
+
+from .point_projection import pappus_element_volume
 
 
 def flatten_by_arc_length(r: np.ndarray, z: np.ndarray) -> np.ndarray:

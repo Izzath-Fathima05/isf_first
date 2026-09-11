@@ -1,10 +1,17 @@
 """
-CAD -> SPIF-Exposed Profile -> Patches -> Flattened Layout
-=============================================================
+Axisymmetric profile extraction for ISF.
 
-Handles the AXISYMMETRIC case (bodies of revolution). For general,
-non-axisymmetric B-Reps, use general_flatten.py + cad_native_patches.py
-instead.
+The numerical pipeline operates on the SPIF-exposed surface only.
+
+For the current bowl STEP:
+    outer sphere radius = 50 mm
+    inner sphere radius = 45 mm
+
+The outer surface is therefore reconstructed as:
+
+    r(z) = sqrt(R^2 - (z-zc)^2)
+
+This avoids mixing the inner and outer shell surfaces.
 """
 
 import numpy as np
@@ -13,137 +20,623 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
 
-def load_cad_as_mesh(path: str) -> trimesh.Trimesh:
-    """Loads any CAD file trimesh understands (STEP via cascadio, STL, etc.)."""
-    return trimesh.load(path, force="mesh")
+EPS = 1e-12
 
 
-def check_axisymmetry(mesh: trimesh.Trimesh, axis=np.array([0, 0, 1.0]),
-                       axis_origin=np.array([0, 0, 0])) -> dict:
-    """
-    Confirms (or flags violation of) the axisymmetry assumption that
-    makes the rest of this pipeline valid.
-    """
-    axis = axis / np.linalg.norm(axis)
+def load_cad_as_mesh(path: str):
+    """Compatibility loader."""
+
+    return trimesh.load(
+        path,
+        force="mesh",
+    )
+
+
+def _radial_coordinates(
+    mesh,
+    axis=np.array([0.0, 0.0, 1.0]),
+    axis_origin=np.array([0.0, 0.0, 0.0]),
+):
+    """Convert Cartesian coordinates to axial/radial coordinates."""
+
+    axis = np.asarray(
+        axis,
+        dtype=float,
+    )
+
+    axis /= np.linalg.norm(axis)
+
+    axis_origin = np.asarray(
+        axis_origin,
+        dtype=float,
+    )
+
     rel = mesh.vertices - axis_origin
-    u = rel @ axis
-    perp = rel - np.outer(u, axis)
-    radius = np.linalg.norm(perp, axis=1)
 
-    n_bins = 20
-    bins = np.linspace(u.min(), u.max(), n_bins + 1)
-    bin_idx = np.digitize(u, bins) - 1
-    spreads = []
-    for b in range(n_bins):
-        mask = bin_idx == b
-        if mask.sum() > 1:
-            spreads.append(radius[mask].std())
-    max_spread = max(spreads) if spreads else 0.0
+    z = rel @ axis
+
+    perpendicular = (
+        rel
+        - np.outer(z, axis)
+    )
+
+    r = np.linalg.norm(
+        perpendicular,
+        axis=1,
+    )
+
+    return z, r
+
+
+def _fit_circle_to_profile(
+    r,
+    z,
+):
+    """
+    Fit:
+
+        r^2 + (z-zc)^2 = R^2
+
+    using linear least squares.
+
+    Returns
+    -------
+    R
+    zc
+    rmse
+    """
+
+    r = np.asarray(r, dtype=float)
+    z = np.asarray(z, dtype=float)
+
+    mask = (
+        np.isfinite(r)
+        & np.isfinite(z)
+        & (r > 0)
+    )
+
+    r = r[mask]
+    z = z[mask]
+
+    if len(r) < 10:
+        return None
+
+    # Circle equation:
+    #
+    # r² + z² - 2*zc*z + c = R²
+    #
+    # => -2*zc*z + c = -(r² + z²)
+    #
+    A = np.column_stack([
+        z,
+        np.ones_like(z),
+    ])
+
+    b = -(
+        r ** 2
+        + z ** 2
+    )
+
+    coeff, *_ = np.linalg.lstsq(
+        A,
+        b,
+        rcond=None,
+    )
+
+    a = coeff[0]
+    c = coeff[1]
+
+    zc = -a / 2.0
+
+    R_squared = (
+        zc ** 2
+        - c
+    )
+
+    if R_squared <= 0:
+        return None
+
+    R = np.sqrt(
+        R_squared
+    )
+
+    predicted_r_squared = (
+        R ** 2
+        - (z - zc) ** 2
+    )
+
+    valid = (
+        predicted_r_squared > 0
+    )
+
+    if not np.any(valid):
+        return None
+
+    predicted_r = np.sqrt(
+        predicted_r_squared[valid]
+    )
+
+    rmse = np.sqrt(
+        np.mean(
+            (
+                predicted_r
+                - r[valid]
+            ) ** 2
+        )
+    )
 
     return {
-        "u": u, "radius": radius,
-        "max_radial_spread": max_spread,
-        "likely_axisymmetric": max_spread < 0.05 * radius.max(),
+        "radius": R,
+        "center_z": zc,
+        "rmse": rmse,
     }
 
 
-def extract_axisymmetric_profile(mesh: trimesh.Trimesh, n_profile_points: int = 60,
-                                  axis=np.array([0, 0, 1.0]),
-                                  axis_origin=np.array([0, 0, 0])):
+def _extract_outer_envelope(
+    mesh,
+    n_bins=400,
+):
     """
-    Collapses the 3D mesh surface onto its 2D axisymmetric profile
-    (r(z)) by binning vertices by height along the axis and taking the
-    mean radius per bin -- robust to angular (azimuthal) mesh noise.
-    """
-    axis = axis / np.linalg.norm(axis)
-    rel = mesh.vertices - axis_origin
-    u = rel @ axis
-    perp = rel - np.outer(u, axis)
-    radius = np.linalg.norm(perp, axis=1)
+    Extract approximate outer radial envelope.
 
-    bins = np.linspace(u.min(), u.max(), n_profile_points + 1)
-    bin_centers = (bins[:-1] + bins[1:]) / 2
-    r_profile = np.array([
-        radius[(u >= bins[i]) & (u < bins[i + 1])].mean()
-        if np.any((u >= bins[i]) & (u < bins[i + 1])) else np.nan
-        for i in range(n_profile_points)
+    This is only used to identify/fitting the analytic surface.
+    """
+
+    z, r = _radial_coordinates(
+        mesh
+    )
+
+    bins = np.linspace(
+        z.min(),
+        z.max(),
+        n_bins + 1,
+    )
+
+    z_values = []
+    r_values = []
+
+    for i in range(
+        n_bins
+    ):
+
+        mask = (
+            (z >= bins[i])
+            & (z < bins[i + 1])
+        )
+
+        if mask.sum() < 3:
+            continue
+
+        z_local = z[mask]
+        r_local = r[mask]
+
+        # Upper radial envelope.
+        r_value = np.percentile(
+            r_local,
+            98.0,
+        )
+
+        z_value = np.mean(
+            z_local
+        )
+
+        z_values.append(
+            z_value
+        )
+
+        r_values.append(
+            r_value
+        )
+
+    return (
+        np.asarray(z_values),
+        np.asarray(r_values),
+    )
+
+
+def check_axisymmetry(
+    mesh,
+    axis=np.array([0.0, 0.0, 1.0]),
+    axis_origin=np.array([0.0, 0.0, 0.0]),
+    surface="outer",
+    n_bins=400,
+):
+    """
+    Check axisymmetry by fitting the selected surface to an
+    axisymmetric profile.
+
+    IMPORTANT:
+    We do NOT compute standard deviation of radius inside a z-bin,
+    because radius naturally changes with z.
+    """
+
+    if surface != "outer":
+        raise NotImplementedError(
+            "Current robust implementation "
+            "supports surface='outer'."
+        )
+
+    z, r = _extract_outer_envelope(
+        mesh,
+        n_bins=n_bins,
+    )
+
+    fit = _fit_circle_to_profile(
+        r,
+        z,
+    )
+
+    if fit is None:
+
+        return {
+            "likely_axisymmetric": False,
+            "max_radial_spread": np.inf,
+            "relative_spread": np.inf,
+            "radius": None,
+            "center_z": None,
+        }
+
+    R = fit["radius"]
+    zc = fit["center_z"]
+
+    predicted = (
+        R ** 2
+        - (z - zc) ** 2
+    )
+
+    valid = predicted > 0
+
+    predicted_r = np.sqrt(
+        predicted[valid]
+    )
+
+    actual_r = r[valid]
+
+    residual = (
+        actual_r
+        - predicted_r
+    )
+
+    rmse = np.sqrt(
+        np.mean(
+            residual ** 2
+        )
+    )
+
+    relative = (
+        rmse / R
+    )
+
+    return {
+        "likely_axisymmetric": relative < 0.01,
+        "max_radial_spread": rmse,
+        "relative_spread": relative,
+        "radius": R,
+        "center_z": zc,
+    }
+
+
+def extract_axisymmetric_profile(
+    mesh,
+    n_profile_points=361,
+    axis=np.array([0.0, 0.0, 1.0]),
+    axis_origin=np.array([0.0, 0.0, 0.0]),
+    surface="outer",
+):
+    """
+    Extract a clean axisymmetric profile.
+
+    For a spherical surface, reconstruct the profile analytically
+    from the fitted sphere.
+    """
+
+    if surface != "outer":
+        raise NotImplementedError(
+            "Current implementation supports "
+            "surface='outer'."
+        )
+
+    z_raw, r_raw = _extract_outer_envelope(
+        mesh,
+        n_bins=500,
+    )
+
+    fit = _fit_circle_to_profile(
+        r_raw,
+        z_raw,
+    )
+
+    if fit is None:
+        raise RuntimeError(
+            "Could not fit the outer axisymmetric surface."
+        )
+
+    R = fit["radius"]
+    zc = fit["center_z"]
+
+    # Restrict to the actual observed geometry.
+    z_min = float(
+        np.min(z_raw)
+    )
+
+    z_max = float(
+        np.max(z_raw)
+    )
+
+    z_limit = R
+
+    z_min = max(
+        z_min,
+        zc - z_limit,
+    )
+
+    z_max = min(
+        z_max,
+        zc + z_limit,
+    )
+
+    z_profile = np.linspace(
+        z_min,
+        z_max,
+        n_profile_points,
+    )
+
+    radicand = (
+        R ** 2
+        - (z_profile - zc) ** 2
+    )
+
+    radicand = np.maximum(
+        radicand,
+        0.0,
+    )
+
+    r_profile = np.sqrt(
+        radicand
+    )
+
+    # Sort by increasing z.
+    order = np.argsort(
+        z_profile
+    )
+
+    z_profile = z_profile[order]
+    r_profile = r_profile[order]
+
+    return (
+        z_profile,
+        r_profile,
+    )
+
+
+def segment_into_patches(
+    z_profile,
+    r_profile,
+    n_patches=5,
+):
+    """Divide profile into equal arc-length patches."""
+
+    z_profile = np.asarray(
+        z_profile,
+        dtype=float,
+    )
+
+    r_profile = np.asarray(
+        r_profile,
+        dtype=float,
+    )
+
+    ds = np.hypot(
+        np.diff(r_profile),
+        np.diff(z_profile),
+    )
+
+    cumulative = np.concatenate([
+        [0.0],
+        np.cumsum(ds),
     ])
 
-    valid = ~np.isnan(r_profile)
-    return bin_centers[valid], r_profile[valid]
+    total = cumulative[-1]
 
+    boundaries = np.linspace(
+        0.0,
+        total,
+        n_patches + 1,
+    )
 
-def segment_into_patches(z_profile: np.ndarray, r_profile: np.ndarray, n_patches: int = 5):
-    """
-    Divides the profile into n_patches contiguous segments of roughly
-    EQUAL ARC LENGTH along the profile curve.
-    """
-    seg_lengths = np.sqrt(np.diff(r_profile) ** 2 + np.diff(z_profile) ** 2)
-    cum_length = np.concatenate([[0], np.cumsum(seg_lengths)])
-    total_length = cum_length[-1]
-
-    patch_boundaries = np.linspace(0, total_length, n_patches + 1)
     patches = []
-    for i in range(n_patches):
-        mask = (cum_length >= patch_boundaries[i]) & (cum_length <= patch_boundaries[i + 1])
-        idx = np.where(mask)[0]
+
+    for i in range(
+        n_patches
+    ):
+
+        mask = (
+            (cumulative >= boundaries[i])
+            &
+            (cumulative <= boundaries[i + 1])
+        )
+
+        idx = np.where(
+            mask
+        )[0]
+
         if len(idx) < 2:
-            idx = np.searchsorted(cum_length, [patch_boundaries[i], patch_boundaries[i + 1]])
+
+            idx = np.searchsorted(
+                cumulative,
+                [
+                    boundaries[i],
+                    boundaries[i + 1],
+                ],
+            )
+
+            idx = np.clip(
+                idx,
+                0,
+                len(cumulative) - 1,
+            )
+
         patches.append({
-            "z": z_profile[idx], "r": r_profile[idx],
-            "arc_length": patch_boundaries[i + 1] - patch_boundaries[i],
-            "label": chr(ord("A") + i),
+            "z": z_profile[idx],
+            "r": r_profile[idx],
+            "arc_length": (
+                boundaries[i + 1]
+                - boundaries[i]
+            ),
+            "label": chr(
+                ord("A") + i
+            ),
         })
+
     return patches
 
 
-def flatten_patches_to_strip(patches: list, thickness: np.ndarray = None):
-    """
-    Lays each patch flat, side by side -- width = patch arc length,
-    height = patch thickness (uniform placeholder if not yet computed
-    by backward_solve.py).
-    """
+def flatten_patches_to_strip(
+    patches,
+    thickness=None,
+):
+    """Flatten patches into a strip."""
+
     if thickness is None:
-        thickness = np.ones(len(patches))
+        thickness = np.ones(
+            len(patches)
+        )
 
     x_start = 0.0
     layout = []
-    for patch, t in zip(patches, thickness):
-        layout.append({"label": patch["label"], "x_start": x_start,
-                        "width": patch["arc_length"], "height": t})
+
+    for patch, t in zip(
+        patches,
+        thickness,
+    ):
+
+        layout.append({
+            "label": patch["label"],
+            "x_start": x_start,
+            "width": patch["arc_length"],
+            "height": t,
+        })
+
         x_start += patch["arc_length"]
+
     return layout
 
 
-def plot_profile_and_patches(z_profile, r_profile, patches, layout, save_path):
-    """Two-panel plot: profile with colored patch overlay on top,
-    flattened strip layout below."""
-    colors = plt.cm.tab10(np.linspace(0, 1, len(patches)))
+def plot_profile_and_patches(
+    z_profile,
+    r_profile,
+    patches,
+    layout,
+    save_path,
+):
+    """Plot profile and patches."""
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 10))
+    colors = plt.cm.tab10(
+        np.linspace(
+            0,
+            1,
+            len(patches),
+        )
+    )
 
-    ax1.plot(r_profile, z_profile, color="black", linewidth=1)
-    for patch, c in zip(patches, colors):
-        ax1.plot(patch["r"], patch["z"], color=c, linewidth=6, solid_capstyle="round")
-        mid = len(patch["r"]) // 2
-        ax1.annotate(patch["label"], (patch["r"][mid], patch["z"][mid]),
-                     textcoords="offset points", xytext=(-15, 0), fontsize=12, fontweight="bold")
-    ax1.set_xlabel("r (mm)"); ax1.set_ylabel("z (mm)")
-    ax1.set_title("SPIF-exposed profile, divided into patches")
-    ax1.set_aspect("equal")
+    fig, (
+        ax1,
+        ax2,
+    ) = plt.subplots(
+        2,
+        1,
+        figsize=(9, 10),
+    )
 
-    for item, c in zip(layout, colors):
-        rect = mpatches.Rectangle((item["x_start"], 0), item["width"], item["height"],
-                                   facecolor=c, edgecolor="black")
-        ax2.add_patch(rect)
-        ax2.annotate(item["label"], (item["x_start"] + item["width"] / 2, -0.15),
-                     ha="center", fontsize=12, fontweight="bold")
-    ax2.set_xlim(0, layout[-1]["x_start"] + layout[-1]["width"])
-    ax2.set_ylim(-0.3, max(item["height"] for item in layout) * 1.3)
-    ax2.set_xlabel("flattened arc-length position (mm)")
-    ax2.set_title("Patches flattened and laid side by side")
-    ax2.set_aspect("auto")
+    ax1.plot(
+        r_profile,
+        z_profile,
+        color="black",
+        linewidth=1.5,
+    )
+
+    for patch, color in zip(
+        patches,
+        colors,
+    ):
+
+        ax1.plot(
+            patch["r"],
+            patch["z"],
+            color=color,
+            linewidth=5,
+        )
+
+    ax1.set_xlabel(
+        "r (mm)"
+    )
+
+    ax1.set_ylabel(
+        "z (mm)"
+    )
+
+    ax1.set_title(
+        "SPIF forming surface"
+    )
+
+    ax1.set_aspect(
+        "equal"
+    )
+
+    for item, color in zip(
+        layout,
+        colors,
+    ):
+
+        rect = mpatches.Rectangle(
+            (
+                item["x_start"],
+                0,
+            ),
+            item["width"],
+            item["height"],
+            facecolor=color,
+            edgecolor="black",
+        )
+
+        ax2.add_patch(
+            rect
+        )
+
+        ax2.annotate(
+            item["label"],
+            (
+                item["x_start"]
+                + item["width"] / 2,
+                -0.15,
+            ),
+            ha="center",
+        )
+
+    ax2.set_xlim(
+        0,
+        layout[-1]["x_start"]
+        + layout[-1]["width"],
+    )
+
+    ax2.set_xlabel(
+        "Flattened arc length (mm)"
+    )
+
+    ax2.set_ylabel(
+        "Thickness (mm)"
+    )
+
+    ax2.set_title(
+        "Flattened patches"
+    )
 
     plt.tight_layout()
-    plt.savefig(save_path, dpi=150)
-    return fig
+
+    plt.savefig(
+        save_path,
+        dpi=150,
+        bbox_inches="tight",
+    )
+
+    plt.close(fig)

@@ -22,22 +22,18 @@ DIFFERENT face types stitched together. The correct workflow is:
      approach (patch_extraction.py + backward_solve.py).
 """
 
-import numpy as np
-from OCP.STEPControl import STEPControl_Reader
+from OCP.BRepAdaptor import BRepAdaptor_Surface  # noqa: I001  # type: ignore[reportMissingImports]
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+from OCP.GeomAbs import GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Plane
 from OCP.IFSelect import IFSelect_RetDone
-from OCP.TopExp import TopExp_Explorer
+from OCP.STEPControl import STEPControl_AsIs, STEPControl_Reader, STEPControl_Writer
 from OCP.TopAbs import TopAbs_FACE
-from OCP.TopoDS import TopoDS, TopoDS_Shape
-from OCP.BRepAdaptor import BRepAdaptor_Surface
-from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone
-from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
-from OCP.gp import gp_Pnt, gp_Ax2, gp_Dir, gp_Circ
-from OCP.GC import GC_MakeArcOfCircle
-from OCP.STEPControl import STEPControl_Writer, STEPControl_AsIs
-from OCP.BRepTools import BRepTools
+from OCP.TopExp import TopExp_Explorer
+import OCP.TopoDS
+from OCP.gp import gp_Pnt
 
 
-def load_step_native(path: str) -> TopoDS_Shape:
+def load_step_native(path: str) -> OCP.TopoDS.TopoDS_Shape:
     """Loads a STEP file as a real B-Rep (exact surface types preserved),
     NOT a triangulated mesh -- required to know which faces are exactly
     planar/cylindrical/conical vs. genuinely doubly-curved."""
@@ -49,13 +45,13 @@ def load_step_native(path: str) -> TopoDS_Shape:
     return reader.OneShape()
 
 
-def classify_faces(shape: TopoDS_Shape) -> dict:
+def classify_faces(shape: OCP.TopoDS.TopoDS_Shape) -> dict:
     """Walks every face in the shape and classifies it by exact
     surface type. Returns a dict of lists, keyed by type name."""
     result = {"Plane": [], "Cylinder": [], "Cone": [], "Other": []}
     explorer = TopExp_Explorer(shape, TopAbs_FACE)
     while explorer.More():
-        face = TopoDS.Face_s(explorer.Current())
+        face = OCP.TopoDS.TopoDS.Face_s(explorer.Current())
         adaptor = BRepAdaptor_Surface(face)
         t = adaptor.GetType()
         if t == GeomAbs_Plane:

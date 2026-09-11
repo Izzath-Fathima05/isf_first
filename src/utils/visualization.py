@@ -71,6 +71,139 @@ def plot_thickness_vs_radius(r_flat, t_initial, t_target, title="Required Initia
     plt.tight_layout()
     return fig
 
+def plot_thickness_segment_heatmap(
+    alpha_start,
+    alpha_end,
+    t_initial,
+    title="Initial Thickness Across Alpha Segments",
+):
+    """
+    Heatmap showing T0 for each alpha segment.
+
+    Each cell represents one physical alpha bin.
+    """
+
+    alpha_start = np.asarray(alpha_start, dtype=float)
+    alpha_end = np.asarray(alpha_end, dtype=float)
+    t_initial = np.asarray(t_initial, dtype=float)
+
+    if not (
+        len(alpha_start)
+        == len(alpha_end)
+        == len(t_initial)
+    ):
+        raise ValueError(
+            "alpha_start, alpha_end and t_initial "
+            "must have the same length."
+        )
+
+    if len(t_initial) == 0:
+        raise ValueError(
+            "No thickness segments provided."
+        )
+
+    # ---------------------------------------------------------
+    # One-row heatmap
+    # ---------------------------------------------------------
+
+    heatmap = t_initial.reshape(1, -1)
+
+    fig, ax = plt.subplots(
+        figsize=(15, 4)
+    )
+
+    image = ax.imshow(
+        heatmap,
+        aspect="auto",
+        interpolation="nearest",
+        cmap="viridis",
+    )
+
+    # ---------------------------------------------------------
+    # X-axis: alpha segments
+    # ---------------------------------------------------------
+
+    centers = np.arange(
+        len(t_initial)
+    )
+
+    labels = [
+        f"{start:.0f}–{end:.0f}°"
+        for start, end in zip(
+            alpha_start,
+            alpha_end,
+        )
+    ]
+
+    ax.set_xticks(centers)
+
+    ax.set_xticklabels(
+        labels,
+        rotation=90,
+        fontsize=8,
+    )
+
+    ax.set_xlabel(
+        "Alpha segment"
+    )
+
+    # ---------------------------------------------------------
+    # Y-axis
+    # ---------------------------------------------------------
+
+    ax.set_yticks([0])
+
+    ax.set_yticklabels(
+        ["T₀"]
+    )
+
+    ax.set_ylabel(
+        "Initial thickness"
+    )
+
+    # ---------------------------------------------------------
+    # Colorbar
+    # ---------------------------------------------------------
+
+    colorbar = fig.colorbar(
+        image,
+        ax=ax,
+        pad=0.03,
+    )
+
+    colorbar.set_label(
+        "Initial thickness T₀ (mm)"
+    )
+
+    # ---------------------------------------------------------
+    # Thickness values inside cells
+    # ---------------------------------------------------------
+
+    for i, thickness in enumerate(
+        t_initial
+    ):
+
+        ax.text(
+            i,
+            0,
+            f"{thickness:.2f}",
+            ha="center",
+            va="center",
+            fontsize=7,
+        )
+
+    # ---------------------------------------------------------
+    # Title
+    # ---------------------------------------------------------
+
+    ax.set_title(
+        title
+    )
+
+    plt.tight_layout()
+
+    return fig
+
 
 def plot_mesh_3d(mesh, color_values=None, title="Mesh", cmap="viridis"):
     """Generic 3D mesh viewer, optionally colored by a per-face scalar
