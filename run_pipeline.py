@@ -13,7 +13,7 @@ tangent angle theta
     ↓
 sine-law angle alpha
     ↓
-actual 2-degree alpha bins
+physical regions / 2-degree alpha bins
     ↓
 initial blank thickness
     ↓
@@ -28,14 +28,36 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-# -------------------------------------------------------------
+# =============================================================
 # Project path
-# -------------------------------------------------------------
+# =============================================================
 
 SRC_DIR = os.path.join(
-    os.path.dirname(
-        os.path.abspath(__file__)
-    ),
+    os.path.dirname(os.path.abspath(__file__)),
+    "src",
+)
+
+sys.path.insert(0, SRC_DIR)
+
+
+# =============================================================
+# Imports
+# =============================================================
+
+import argparse
+import os
+import sys
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+# =============================================================
+# Project path
+# =============================================================
+
+SRC_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
     "src",
 )
 
@@ -45,9 +67,9 @@ sys.path.insert(
 )
 
 
-# -------------------------------------------------------------
-# Imports
-# -------------------------------------------------------------
+# =============================================================
+# Project imports
+# =============================================================
 
 from utils.io_utils import (
     ensure_data_dirs,
@@ -72,14 +94,18 @@ from numerical.alpha_bin_solver import (
 from numerical.uv_contour import (
     generate_uv_contour_map,
 )
+
 from utils.visualization import (
     plot_thickness_segment_heatmap,
 )
 
+from utils.wall_angle_plot import (
+    plot_wall_angle_vs_radius,
+)
 
-# -------------------------------------------------------------
+# =============================================================
 # CLI
-# -------------------------------------------------------------
+# =============================================================
 
 parser = argparse.ArgumentParser(
     description="ISF alpha-bin thickness pipeline"
@@ -88,66 +114,75 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "--input",
     required=True,
+    help="Input STEP file",
 )
 
 parser.add_argument(
     "--t_target",
     type=float,
     default=1.0,
+    help="Target final wall thickness [mm]",
 )
 
 parser.add_argument(
     "--n_patches",
     type=int,
     default=5,
+    help="Number of geometric patches",
 )
 
 parser.add_argument(
     "--angle_step",
     type=float,
     default=2.0,
+    help="Alpha-bin width [degrees]",
 )
 
 parser.add_argument(
     "--surface",
     choices=["outer", "inner"],
     default="outer",
+    help="Surface used for axisymmetric profile extraction",
 )
 
 parser.add_argument(
     "--n_profile_points",
     type=int,
     default=361,
+    help="Number of profile samples",
 )
 
 args = parser.parse_args()
 
-
-# -------------------------------------------------------------
+# =============================================================
 # Directories
-# -------------------------------------------------------------
+# =============================================================
 
 ensure_data_dirs()
 
+output_patches_dir = "data/output/patches"
+output_thickness_maps_dir = "data/output/thickness_maps"
+output_visualizations_dir = "data/output/visualizations"
+
 os.makedirs(
-    "data/output/patches",
+    output_patches_dir,
     exist_ok=True,
 )
 
 os.makedirs(
-    "data/output/thickness_maps",
+    output_thickness_maps_dir,
     exist_ok=True,
 )
 
 os.makedirs(
-    "data/output/visualizations",
+    output_visualizations_dir,
     exist_ok=True,
 )
 
 
-# -------------------------------------------------------------
+# =============================================================
 # 1. Load CAD
-# -------------------------------------------------------------
+# =============================================================
 
 print(
     f"Loading CAD file: {args.input}"
@@ -164,22 +199,21 @@ print(
 
 print(
     "  Mesh extent [mm]:",
-    mesh.extents
+    mesh.extents,
 )
 
 
-# -------------------------------------------------------------
+# =============================================================
 # 2. Axisymmetry
-# -------------------------------------------------------------
+# =============================================================
 
 symmetry = check_axisymmetry(
     mesh,
     surface=args.surface,
 )
 
-print(
-    "Axisymmetry check:"
-)
+print()
+print("Axisymmetry check:")
 
 print(
     f"  selected surface : {args.surface}"
@@ -212,21 +246,19 @@ if not symmetry["likely_axisymmetric"]:
     )
 
 
-# -------------------------------------------------------------
-# 3. Extract surface profile
-# -------------------------------------------------------------
+# =============================================================
+# 3. Extract axisymmetric profile
+# =============================================================
 
 print()
 print(
     "Extracting axisymmetric profile..."
 )
 
-z_profile, r_profile = (
-    extract_axisymmetric_profile(
-        mesh,
-        n_profile_points=args.n_profile_points,
-        surface=args.surface,
-    )
+z_profile, r_profile = extract_axisymmetric_profile(
+    mesh,
+    n_profile_points=args.n_profile_points,
+    surface=args.surface,
 )
 
 print(
@@ -249,9 +281,9 @@ print(
 )
 
 
-# -------------------------------------------------------------
-# 4. Compute theta / alpha diagnostics
-# -------------------------------------------------------------
+# =============================================================
+# 4. Theta / alpha diagnostics
+# =============================================================
 
 theta_profile = compute_tangent_angles(
     r_profile,
@@ -259,13 +291,41 @@ theta_profile = compute_tangent_angles(
 )
 
 alpha_profile = tangent_to_sine_law_angle(
-    theta_profile
+    theta_profile,
 )
+
+# -------------------------------------------------------------
+# Diagnostic: wall angle versus radius
+# -------------------------------------------------------------
 
 print()
 print(
-    "Angle range:"
+    "Generating wall-angle diagnostic plot..."
 )
+
+wall_angle_path = os.path.join(
+    output_visualizations_dir,
+    "wall_angle_vs_radius.png",
+)
+
+wall_angle_fig = plot_wall_angle_vs_radius(
+    r_profile,
+    alpha_profile,
+    save_path=wall_angle_path,
+)
+
+plt.close(
+    wall_angle_fig
+)
+
+print(
+    f"  Wall-angle diagnostic saved: "
+    f"{wall_angle_path}"
+)
+
+
+print()
+print("Angle range:")
 
 print(
     f"  theta: "
@@ -280,9 +340,9 @@ print(
 )
 
 
-# -------------------------------------------------------------
+# =============================================================
 # 5. Create geometric patches
-# -------------------------------------------------------------
+# =============================================================
 
 print()
 print(
@@ -308,9 +368,9 @@ plot_profile_and_patches(
 )
 
 
-# -------------------------------------------------------------
-# 6. Alpha-bin solver
-# -------------------------------------------------------------
+# =============================================================
+# 6. Alpha-bin thickness solver
+# =============================================================
 
 print()
 print(
@@ -327,7 +387,7 @@ print(
     f"{args.angle_step:.2f} degrees"
 )
 
-elements, rows = solve_thickness(
+solver_result = solve_thickness(
     r_profile=r_profile,
     z_profile=z_profile,
     t_final=args.t_target,
@@ -335,63 +395,393 @@ elements, rows = solve_thickness(
 )
 
 
-# -------------------------------------------------------------
+# =============================================================
+# Validate solver result
+# =============================================================
+
+if not isinstance(solver_result, dict):
+
+    raise TypeError(
+        "solve_thickness() must return a dictionary. "
+        f"Got {type(solver_result)}."
+    )
+
+if "elements" not in solver_result:
+
+    raise KeyError(
+        "solve_thickness() result is missing "
+        "'elements'. "
+        f"Available keys: {list(solver_result.keys())}"
+    )
+
+if "rows" not in solver_result:
+
+    raise KeyError(
+        "solve_thickness() result is missing "
+        "'rows'. "
+        f"Available keys: {list(solver_result.keys())}"
+    )
+
+
+raw_elements = solver_result["elements"]
+raw_rows = solver_result["rows"]
+
+# =============================================================
+# Normalize current alpha_bin_solver.py elements
+# =============================================================
+#
+# Current solver element schema:
+#
+#   kind
+#   start_idx
+#   end_idx
+#   r_start
+#   z_start
+#   r_end
+#   z_end
+#   dr
+#   dz
+#   arc_length
+#   theta_mid
+#   alpha_mid
+#   t_initial
+#   t_analytic
+#   analytic_error_percent
+#   t_final
+#   target_volume
+#   alpha_bin_index
+#   alpha_bin_start
+#   alpha_bin_end
+#   region_arc_length
+#   characteristic_spacing
+#   min_arc_length
+#   arc_length_ratio
+#   label
+#
+# Do NOT derive alpha_mid/theta_mid here.
+# They are already supplied by the current solver.
+# =============================================================
+
+elements = []
+
+for index, element in enumerate(
+    raw_elements,
+    start=1,
+):
+
+    if not isinstance(element, dict):
+        raise TypeError(
+            f"Solver element {index} must be a dictionary. "
+            f"Got {type(element)}."
+        )
+
+    required_keys = [
+        "kind",
+        "r_start",
+        "z_start",
+        "r_end",
+        "z_end",
+        "dr",
+        "dz",
+        "arc_length",
+        "theta_mid",
+        "alpha_mid",
+        "t_initial",
+        "t_analytic",
+        "analytic_error_percent",
+        "t_final",
+        "target_volume",
+        "alpha_bin_index",
+        "alpha_bin_start",
+        "alpha_bin_end",
+        "region_arc_length",
+        "characteristic_spacing",
+        "min_arc_length",
+        "arc_length_ratio",
+        "label",
+    ]
+
+    missing = [
+        key
+        for key in required_keys
+        if key not in element
+    ]
+
+    if missing:
+        raise KeyError(
+            f"Solver element {index} is missing required keys: "
+            f"{missing}. "
+            f"Available keys: {list(element.keys())}"
+        )
+
+    elements.append(
+        {
+            "index": index,
+
+            "kind": element["kind"],
+            "label": element["label"],
+
+            "start_idx": int(
+                element["start_idx"]
+            ),
+
+            "end_idx": int(
+                element["end_idx"]
+            ),
+
+            "r_start": float(
+                element["r_start"]
+            ),
+
+            "z_start": float(
+                element["z_start"]
+            ),
+
+            "r_end": float(
+                element["r_end"]
+            ),
+
+            "z_end": float(
+                element["z_end"]
+            ),
+
+            "dr": float(
+                element["dr"]
+            ),
+
+            "dz": float(
+                element["dz"]
+            ),
+
+            "arc_length": float(
+                element["arc_length"]
+            ),
+
+            "theta_mid": float(
+                element["theta_mid"]
+            ),
+
+            "alpha_mid": float(
+                element["alpha_mid"]
+            ),
+
+            "t_initial": float(
+                element["t_initial"]
+            ),
+
+            "t_analytic": float(
+                element["t_analytic"]
+            ),
+
+            "analytic_error_percent": float(
+                element["analytic_error_percent"]
+            ),
+
+            "t_final": float(
+                element["t_final"]
+            ),
+
+            "target_volume": float(
+                element["target_volume"]
+            ),
+
+            "alpha_bin_index": element[
+                "alpha_bin_index"
+            ],
+
+            "alpha_bin_start": float(
+                element["alpha_bin_start"]
+            ),
+
+            "alpha_bin_end": float(
+                element["alpha_bin_end"]
+            ),
+
+            "region_arc_length": float(
+                element["region_arc_length"]
+            ),
+
+            "characteristic_spacing": float(
+                element["characteristic_spacing"]
+            ),
+
+            "min_arc_length": float(
+                element["min_arc_length"]
+            ),
+
+            "arc_length_ratio": float(
+                element["arc_length_ratio"]
+            ),
+        }
+    )
+
+
+# =============================================================
+# Convert current solver rows
+# =============================================================
+#
+# The current solver already supplies alpha/theta information.
+# Prefer the actual solver values instead of reconstructing them.
+# =============================================================
+
+numeric_rows = []
+
+for index, row in enumerate(
+    raw_rows,
+    start=1,
+):
+
+    if not isinstance(row, dict):
+        raise TypeError(
+            f"Solver row {index} must be a dictionary. "
+            f"Got {type(row)}."
+        )
+
+    required_keys = [
+        "r",
+        "z",
+        "t_initial",
+    ]
+
+    missing = [
+        key
+        for key in required_keys
+        if key not in row
+    ]
+
+    if missing:
+        raise KeyError(
+            f"Solver row {index} is missing required keys: "
+            f"{missing}. "
+            f"Available keys: {list(row.keys())}"
+        )
+
+    r_value = float(row["r"])
+    z_value = float(row["z"])
+    t_value = float(row["t_initial"])
+
+    # Current solver may already provide these.
+    # If not, derive them from the alpha-bin boundaries.
+    if "alpha_mid" in row:
+        alpha_value = float(
+            row["alpha_mid"]
+        )
+
+    elif (
+        "alpha_bin_start" in row
+        and "alpha_bin_end" in row
+    ):
+        alpha_value = 0.5 * (
+            float(row["alpha_bin_start"])
+            + float(row["alpha_bin_end"])
+        )
+
+    else:
+        raise KeyError(
+            f"Solver row {index} has no alpha information. "
+            f"Available keys: {list(row.keys())}"
+        )
+
+    if "theta_mid" in row:
+        theta_value = float(
+            row["theta_mid"]
+        )
+
+    else:
+        # Current alpha convention:
+        # alpha = 90 - theta_acute
+        theta_value = 90.0 - alpha_value
+
+    numeric_rows.append(
+        [
+            r_value,
+            z_value,
+            t_value,
+            theta_value,
+            alpha_value,
+        ]
+    )
+
+if not numeric_rows:
+    raise ValueError(
+        "solve_thickness() returned no rows."
+    )
+
+rows = np.asarray(
+    numeric_rows,
+    dtype=float,
+)
+
+# =============================================================
+# Numerical validation
+# =============================================================
+
+if not np.all(
+    np.isfinite(rows)
+):
+
+    raise ValueError(
+        "Solver rows contain NaN or infinite values."
+    )
+
+if np.any(
+    rows[:, 2] <= 0.0
+):
+
+    bad_indices = np.where(
+        rows[:, 2] <= 0.0
+    )[0]
+
+    raise ValueError(
+        "Solver produced non-positive "
+        "initial thickness at row indices: "
+        f"{bad_indices.tolist()}"
+    )
+
+
+# =============================================================
 # 7. Print physical elements
-# -------------------------------------------------------------
+# =============================================================
 
 print()
-print(
-    "Physical alpha-bin solution"
-)
+print("Physical alpha-bin solution")
+print("---------------------------")
 
 print(
-    "---------------------------"
-)
-
-print(
-    f"Total physical elements: "
-    f"{len(elements)}"
+    f"Total physical elements: {len(elements)}"
 )
 
 print()
 
 print(
-    "Element   Alpha range      "
-    "Theta      Alpha       T0"
+    "Element   Alpha range       "
+    "Theta      T0(mm)      Arc(mm)"
 )
 
 print(
-    "------------------------------------------------"
+    "----------------------------------------------------------"
 )
 
 for element in elements:
 
     print(
         f"{element['index']:3d}       "
-        f"{element['alpha_start']:5.1f}-"
-        f"{element['alpha_end']:5.1f}°    "
+        f"{element['alpha_bin_start']:5.1f}-"
+        f"{element['alpha_bin_end']:5.1f}°    "
         f"{element['theta_mid']:7.2f}°   "
-        f"{element['alpha_mid']:7.2f}°   "
-        f"{element['t_initial']:10.4f} mm"
+        f"{element['t_initial']:9.4f}   "
+        f"{element['arc_length']:9.4f}"
     )
 
 
-# -------------------------------------------------------------
-# 8. Convert solver rows
-# -------------------------------------------------------------
+# =============================================================
+# 8. Output arrays
+# =============================================================
 
-rows = np.asarray(
-    rows,
-    dtype=float,
+print()
+print(
+    "Processing solver rows..."
 )
-
-if rows.ndim != 2 or rows.shape[1] < 5:
-
-    raise ValueError(
-        "Unexpected solver output format. "
-        f"Expected rows with at least 5 columns, "
-        f"got shape {rows.shape}."
-    )
 
 r_output = rows[:, 0]
 z_output = rows[:, 1]
@@ -400,9 +790,9 @@ theta_output = rows[:, 3]
 alpha_output = rows[:, 4]
 
 
-# -------------------------------------------------------------
-# 9. Thickness plot
-# -------------------------------------------------------------
+# =============================================================
+# 9. Thickness vs radius plot
+# =============================================================
 
 print()
 print(
@@ -453,9 +843,10 @@ plt.savefig(
 
 plt.close(fig)
 
-# -------------------------------------------------------------
-# 9B. Thickness heatmap across alpha segments
-# -------------------------------------------------------------
+
+# =============================================================
+# 9B. Thickness heatmap
+# =============================================================
 
 print()
 print(
@@ -464,7 +855,7 @@ print(
 
 alpha_start = np.array(
     [
-        element["alpha_start"]
+        element["alpha_bin_start"]
         for element in elements
     ],
     dtype=float,
@@ -472,7 +863,7 @@ alpha_start = np.array(
 
 alpha_end = np.array(
     [
-        element["alpha_end"]
+        element["alpha_bin_end"]
         for element in elements
     ],
     dtype=float,
@@ -493,9 +884,9 @@ fig_heatmap = plot_thickness_segment_heatmap(
     title="Initial Thickness Across Alpha Segments",
 )
 
-heatmap_output_path = (
-    "data/output/thickness_maps/"
-    "thickness_segment_heatmap.png"
+heatmap_output_path = os.path.join(
+    output_thickness_maps_dir,
+    "thickness_segment_heatmap.png",
 )
 
 fig_heatmap.savefig(
@@ -504,16 +895,19 @@ fig_heatmap.savefig(
     bbox_inches="tight",
 )
 
-plt.close(fig_heatmap)
+plt.close(
+    fig_heatmap
+)
 
 print(
     f"  Thickness segment heatmap saved: "
     f"{heatmap_output_path}"
 )
 
-# -------------------------------------------------------------
+
+# =============================================================
 # 10. Save CSV
-# -------------------------------------------------------------
+# =============================================================
 
 print(
     "Saving thickness table..."
@@ -529,9 +923,9 @@ save_thickness_csv(
 )
 
 
-# -------------------------------------------------------------
+# =============================================================
 # 11. UV thickness map
-# -------------------------------------------------------------
+# =============================================================
 
 print()
 print(
@@ -541,13 +935,7 @@ print(
 try:
 
     # ---------------------------------------------------------
-    # Use ACTUAL CAD vertices.
-    #
-    # Do not use r_profile / z_profile here.
-    #
-    # The profile has 361 samples.
-    # The solver has 42 alpha-bin samples.
-    # The UV map needs the original 3D CAD vertices.
+    # Actual CAD vertices
     # ---------------------------------------------------------
 
     surface_vertices = np.asarray(
@@ -560,28 +948,20 @@ try:
         f"{len(surface_vertices)}"
     )
 
-
     # ---------------------------------------------------------
-    # Extract alpha-bin centers
+    # Alpha-bin centers
     # ---------------------------------------------------------
 
     alpha_centers = np.array(
-        [
-            element["alpha_mid"]
-            for element in elements
-        ],
-        dtype=float,
-    )
-
-    print(
-        f"  Alpha-bin samples    : "
-        f"{len(alpha_centers)}"
-    )
-
-
-    # ---------------------------------------------------------
-    # Extract initial thickness values
-    # ---------------------------------------------------------
+    [
+        0.5 * (
+            element["alpha_bin_start"]
+            + element["alpha_bin_end"]
+        )
+        for element in elements
+    ],
+    dtype=float,
+)
 
     thickness_values = np.array(
         [
@@ -592,46 +972,17 @@ try:
     )
 
     print(
+        f"  Alpha-bin samples    : "
+        f"{len(alpha_centers)}"
+    )
+
+    print(
         f"  Thickness samples    : "
         f"{len(thickness_values)}"
     )
 
-
     # ---------------------------------------------------------
-    # Estimate spherical forming surface
-    # ---------------------------------------------------------
-    #
-    # Sphere equation:
-    #
-    #     r² + (z - zc)² = R²
-    #
-    # Expanding:
-    #
-    #     r² + z² - 2 z zc + zc² = R²
-    #
-    # Therefore:
-    #
-    #     r² + z² = 2 z zc + C
-    #
-    # where:
-    #
-    #     C = R² - zc²
-    #
-    # IMPORTANT:
-    #
-    # The coefficient MUST be +2*z.
-    #
-    # The previous version used -2*z, which produced:
-    #
-    #     zc = +0.469850 mm
-    #
-    # instead of:
-    #
-    #     zc = -0.469850 mm
-    #
-    # That sign error caused the UV alpha range to become
-    # approximately 90°–180° and all thickness values to
-    # clamp to the final alpha-bin value.
+    # Profile
     # ---------------------------------------------------------
 
     profile_r = np.asarray(
@@ -664,9 +1015,10 @@ try:
             "to fit spherical surface."
         )
 
-
     # ---------------------------------------------------------
-    # Correct sphere fit
+    # Sphere fit
+    #
+    # r² + z² = 2*zc*z + C
     # ---------------------------------------------------------
 
     A = np.column_stack(
@@ -695,17 +1047,6 @@ try:
         fit[1]
     )
 
-
-    # ---------------------------------------------------------
-    # Recover sphere radius
-    #
-    # C = R² - zc²
-    #
-    # therefore:
-    #
-    # R² = C + zc²
-    # ---------------------------------------------------------
-
     sphere_radius_squared = (
         sphere_constant
         + sphere_center_z ** 2
@@ -723,11 +1064,6 @@ try:
         )
     )
 
-
-    # ---------------------------------------------------------
-    # Diagnostics
-    # ---------------------------------------------------------
-
     print(
         f"  Sphere radius        : "
         f"{sphere_radius:.6f} mm"
@@ -738,28 +1074,6 @@ try:
         f"{sphere_center_z:.6f} mm"
     )
 
-
-    # ---------------------------------------------------------
-    # Expected values for current bowl
-    # ---------------------------------------------------------
-
-    print(
-        "  Expected approximately:"
-    )
-
-    print(
-        "    R  ≈ 47.586930 mm"
-    )
-
-    print(
-        "    zc ≈ -0.469850 mm"
-    )
-
-
-    # ---------------------------------------------------------
-    # Sphere center
-    # ---------------------------------------------------------
-
     sphere_center = np.array(
         [
             0.0,
@@ -768,7 +1082,6 @@ try:
         ],
         dtype=float,
     )
-
 
     # ---------------------------------------------------------
     # Generate UV map
@@ -795,7 +1108,6 @@ try:
         grid_res=200,
         title="Initial Sheet Thickness T₀(u,v)",
     )
-
 
     # ---------------------------------------------------------
     # UV diagnostics
@@ -835,27 +1147,6 @@ try:
         f"{thickness_surface.max():.4f} mm"
     )
 
-
-    # ---------------------------------------------------------
-    # Sanity check
-    # ---------------------------------------------------------
-
-    if (
-        alpha_surface.min() > 90.0
-        or alpha_surface.max() > 100.0
-    ):
-
-        print()
-        print(
-            "  WARNING: UV alpha range looks incorrect."
-        )
-
-        print(
-            "  Check the alpha convention in "
-            "src/numerical/uv_contour.py."
-        )
-
-
     # ---------------------------------------------------------
     # Save UV map
     # ---------------------------------------------------------
@@ -878,7 +1169,6 @@ try:
         f"{uv_output_path}"
     )
 
-
 except Exception as exc:
 
     print(
@@ -890,11 +1180,12 @@ except Exception as exc:
     )
 
 
-# -------------------------------------------------------------
+# =============================================================
 # 12. Summary
-# -------------------------------------------------------------
+# =============================================================
 
 print()
+
 print(
     "============================================================"
 )
@@ -936,6 +1227,11 @@ print(
 print(
     "  - data/output/thickness_maps/"
     "thickness_vs_radius.png"
+)
+
+print(
+    "  - data/output/thickness_maps/"
+    "thickness_segment_heatmap.png"
 )
 
 print(
